@@ -24,66 +24,98 @@ from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize
 )
 from PyQt6.QtGui import (
-    QIcon, QMovie, QPainter, QFont, QColor, QAction, QPixmap
+    QIcon, QMovie, QPainter, QFont, QColor, QAction, QPixmap, QPen
 )
 
 
 # ════════════════════════════════════════════════
 # 配置常量 (默认回退)
 # ════════════════════════════════════════════════
-
+#
+# 双向对称设计：两个人各在自己的电脑上跑一份桌宠。
+#   点我的桌宠  → Bark 推送 → 对方手机（通知自带 reply 参数指向"我的收件箱"）
+#   对方点通知  → 打开 H5 页面 → 回复 → POST 到 ntfy/<我的收件箱> → 我的桌宠弹气泡
+#
+# 所以每份配置只需要：
+#   PARTNER_BARK_KEY  对方的 Bark Key（我推送的目标）
+#   MY_TOPIC          我自己的收件箱 topic（我的桌宠监听它；只有我和我的通知知道它）
+#
 # 私密配置从 _secrets.py 注入——该文件被 .gitignore 忽略，不会进入仓库。
-# 打包时 PyInstaller 会把它一并编入 EXE，所以最终发给她的单文件 EXE 依然开箱即用。
+# 打包时 PyInstaller 会把它一并编入 EXE，所以最终交付的单文件 EXE 开箱即用。
 try:
     from _secrets import (
-        BARK_KEY as _INJ_BARK_KEY,
+        PARTNER_BARK_KEY as _INJ_BARK,
+        MY_TOPIC as _INJ_TOPIC,
         H5_URL as _INJ_H5_URL,
-        BOYFRIEND_NAME as _INJ_NAME,
-        SECRET_TOPIC as _INJ_TOPIC,
+        MY_NAME as _INJ_MY_NAME,
+        PARTNER_NAME as _INJ_PARTNER_NAME,
     )
 except ImportError:                      # 公开源码 / 未初始化时的安全回退
-    _INJ_BARK_KEY = "YOUR_BARK_KEY_HERE"
-    _INJ_H5_URL = "https://your-h5-url.com"
-    _INJ_NAME = "猪猪"
-    _INJ_TOPIC = None
+    _INJ_BARK = "PARTNER_BARK_KEY_HERE"
+    _INJ_TOPIC = None                    # None → 首次运行自动生成并落盘
+    _INJ_H5_URL = "https://sisfus1.github.io/couple-pet/"
+    _INJ_MY_NAME = "我"
+    _INJ_PARTNER_NAME = "TA"
 
-# ★★★ 用户配置区：真实密钥放在 _secrets.py，不要写在这里 ★★★
-DEFAULT_BARK_KEY = _INJ_BARK_KEY
+# ★★★ 真实密钥/昵称放在 _secrets.py，不要写在这里 ★★★
+DEFAULT_PARTNER_BARK_KEY = _INJ_BARK
 DEFAULT_H5_URL = _INJ_H5_URL
-DEFAULT_BOYFRIEND_NAME = _INJ_NAME
-
-# 默认 SECRET_TOPIC (与 web/index.html 中保持一致)
-DEFAULT_SECRET_TOPIC = _INJ_TOPIC or "couple_pet_zhuqi_2026_8a3f7b2e9c"
+DEFAULT_MY_NAME = _INJ_MY_NAME
+DEFAULT_PARTNER_NAME = _INJ_PARTNER_NAME
+DEFAULT_MY_TOPIC = _INJ_TOPIC
 
 CONFIG_FILE = "config.json"
 
+# 占位符：命中即视为"未配置"，静默跳过推送
+_BARK_PLACEHOLDERS = ("PARTNER_BARK_KEY_HERE", "YOUR_BARK_KEY_HERE", "")
+
 
 def generate_random_topic():
-    """生成带时间戳的随机 topic"""
-    ts = time.strftime("%Y%m%d%H%M%S")
-    rand = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    return f"couple_pet_zhuqi_{ts}_{rand}"
+    """
+    生成高强度随机 topic。
+    ntfy 官方明确说「the topic is essentially a password」，
+    所以用 28 位随机串，避免被猜中后别人能读/发你们的消息。
+    """
+    rand = ''.join(random.choices(string.ascii_lowercase + string.digits, k=28))
+    return f"couple_{rand}"
 
 
 def load_config():
     """
-    加载配置: 优先读取同级目录的 config.json，否则使用默认值。
-    若 config.json 不存在，自动生成一个并写入磁盘。
+    加载配置：优先读同级目录的 config.json，缺失字段用内置默认值补齐并落盘。
+    兼容旧版字段名（BARK_KEY / SECRET_TOPIC / BOYFRIEND_NAME）。
+    MY_TOPIC 为空时自动生成随机串并写回，这是回复链路能闭环的关键。
     """
     config_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), CONFIG_FILE)
+
+    config = {}
     if os.path.exists(config_path):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f) or {}
+        except Exception:
+            config = {}
 
-    # 使用默认配置
-    config = {
-        "BARK_KEY": DEFAULT_BARK_KEY,
-        "H5_URL": DEFAULT_H5_URL,
-        "SECRET_TOPIC": DEFAULT_SECRET_TOPIC,
-        "BOYFRIEND_NAME": DEFAULT_BOYFRIEND_NAME,
-    }
+    # ── 旧字段名兼容（从单向版升级上来的配置）──
+    if 'PARTNER_BARK_KEY' not in config and 'BARK_KEY' in config:
+        config['PARTNER_BARK_KEY'] = config['BARK_KEY']
+    if 'MY_TOPIC' not in config and 'SECRET_TOPIC' in config:
+        config['MY_TOPIC'] = config['SECRET_TOPIC']
+    if 'PARTNER_NAME' not in config and 'BOYFRIEND_NAME' in config:
+        config['PARTNER_NAME'] = config['BOYFRIEND_NAME']
 
-    # 尝试写入 config.json 供用户后续修改
+    config.setdefault('PARTNER_BARK_KEY', DEFAULT_PARTNER_BARK_KEY)
+    config.setdefault('H5_URL', DEFAULT_H5_URL)
+    config.setdefault('MY_NAME', DEFAULT_MY_NAME)
+    config.setdefault('PARTNER_NAME', DEFAULT_PARTNER_NAME)
+
+    if not config.get('MY_TOPIC'):
+        config['MY_TOPIC'] = DEFAULT_MY_TOPIC or generate_random_topic()
+
+    # 清理已废弃的旧字段，避免以后自己看混
+    for legacy in ('BARK_KEY', 'SECRET_TOPIC', 'BOYFRIEND_NAME'):
+        config.pop(legacy, None)
+
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
@@ -110,7 +142,7 @@ def resource_path(relative_path):
 
 class NtfyListener(QThread):
     """后台流式监听 ntfy.sh 频道，收到消息后通过信号通知主线程"""
-    message_received = pyqtSignal(str)
+    message_received = pyqtSignal(str, str)   # (title, message)
 
     def __init__(self, topic):
         super().__init__()
@@ -132,8 +164,10 @@ class NtfyListener(QThread):
                     try:
                         data = json.loads(line.decode('utf-8'))
                         if data.get("event") == "message":
-                            msg = data.get("message", "")
-                            self.message_received.emit(msg)
+                            self.message_received.emit(
+                                data.get("title", "") or "",
+                                data.get("message", "") or "",
+                            )
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
             except requests.exceptions.Timeout:
@@ -154,25 +188,51 @@ class NtfyListener(QThread):
 # ════════════════════════════════════════════════
 
 class BubbleLabel(QLabel):
-    """圆角半透明粉色气泡"""
+    """
+    圆角半透明粉色气泡 —— 必须是独立顶层窗口。
 
-    def __init__(self, text, parent=None):
-        super().__init__(text, parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    踩坑记录：一开始把它做成桌宠的子控件，定位在窗口正上方 (y = -bh-8)。
+    但 Qt 会把子控件裁剪在父窗口矩形内，窗口外那部分根本不会被绘制，
+    结果气泡在屏幕上完全看不见（实测像素变化为 0）。
+    改成无父控件的顶层窗口后就不受裁剪了。
+    """
+
+    def __init__(self):
+        super().__init__(None)              # 无父控件 → 顶层窗口，不受父窗口裁剪
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.WindowTransparentForInput |      # 鼠标穿透，不挡点击
+            Qt.WindowType.WindowDoesNotAcceptFocus |       # 不抢焦点
+            Qt.WindowType.ToolTip                          # 不出现在任务栏
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        # 气泡底色/描边在 paintEvent 里自己画 —— 在透明顶层窗口上，
+        # QLabel 不会绘制样式表里的 background，只写样式表会得到一个"没底色的文字"。
+        # 所以样式表这里只留文字相关属性。
         self.setStyleSheet("""
             QLabel {
-                background-color: rgba(255, 182, 203, 200);
                 color: #8b4a5e;
-                border-radius: 14px;
                 padding: 10px 16px;
                 font-size: 13px;
                 font-weight: 500;
-                border: 1.5px solid rgba(255, 150, 180, 220);
             }
         """)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.adjustSize()
         self.hide()
+
+    def paintEvent(self, event):
+        """自绘圆角半透明底色 + 描边，再交给 QLabel 画文字"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setBrush(QColor(255, 182, 203, 235))
+        painter.setPen(QPen(QColor(255, 150, 180, 240), 1.5))
+        painter.drawRoundedRect(rect, 14, 14)
+        painter.end()
+        super().paintEvent(event)      # QLabel 负责画文字
 
     def set_text(self, text):
         self.setText(text)
@@ -247,10 +307,14 @@ class PetWindow(QWidget):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.bark_key = config.get("BARK_KEY", DEFAULT_BARK_KEY)
+        self.partner_bark_key = config.get("PARTNER_BARK_KEY", DEFAULT_PARTNER_BARK_KEY)
+        self.my_topic = config.get("MY_TOPIC", DEFAULT_MY_TOPIC)
         self.h5_url = config.get("H5_URL", DEFAULT_H5_URL)
-        self.secret_topic = config.get("SECRET_TOPIC", DEFAULT_SECRET_TOPIC)
-        self.bf_name = config.get("BOYFRIEND_NAME", DEFAULT_BOYFRIEND_NAME)
+        self.my_name = config.get("MY_NAME", DEFAULT_MY_NAME)
+        self.partner_name = config.get("PARTNER_NAME", DEFAULT_PARTNER_NAME)
+
+        # 我给对方发的通知里带的跳转地址：对方点通知→打开H5→回复会发回我的收件箱
+        self.reply_url = f"{self.h5_url}?reply={self.my_topic}"
 
         # 状态
         self._press_pos = QPoint()
@@ -290,8 +354,8 @@ class PetWindow(QWidget):
             movie.setScaledSize(QSize(self.PET_SIZE, self.PET_SIZE))
             self.movies[gif] = movie
 
-        # 气泡
-        self.bubble = BubbleLabel("", self)
+        # 气泡（独立顶层窗口，见 BubbleLabel 的踩坑说明）
+        self.bubble = BubbleLabel()
         self.bubble.hide()
 
         # 气泡定时器
@@ -313,7 +377,7 @@ class PetWindow(QWidget):
         """系统托盘图标"""
         icon_path = resource_path(os.path.join('assets', 'heart.ico'))
         self.tray_icon = QSystemTrayIcon(QIcon(icon_path), self)
-        self.tray_icon.setToolTip(f"想念桌宠 💖 (来自{self.bf_name})")
+        self.tray_icon.setToolTip(f"想念桌宠 💖 (发给{self.partner_name})")
 
         tray_menu = QMenu()
         tray_menu.setStyleSheet("""
@@ -332,7 +396,7 @@ class PetWindow(QWidget):
         """)
 
         # 悄悄话
-        act_whisper = QAction("💌 发句悄悄话给她", tray_menu)
+        act_whisper = QAction(f"💌 发句悄悄话给{self.partner_name}", tray_menu)
         act_whisper.triggered.connect(self._on_whisper)
         tray_menu.addAction(act_whisper)
 
@@ -354,8 +418,8 @@ class PetWindow(QWidget):
         self.tray_icon.show()
 
     def _init_listener(self):
-        """启动 ntfy 监听线程"""
-        self.listener = NtfyListener(self.secret_topic)
+        """启动 ntfy 监听线程，监听我自己的收件箱"""
+        self.listener = NtfyListener(self.my_topic)
         self.listener.message_received.connect(self._on_message_received)
         self.listener.start()
 
@@ -379,21 +443,30 @@ class PetWindow(QWidget):
     # ─── 气泡 ───
 
     def _show_bubble(self, text, duration_ms=3000):
-        """显示气泡在桌宠头顶"""
+        """在桌宠头顶显示气泡（气泡是独立顶层窗口，用全局坐标定位）"""
         self.bubble.set_text(text)
-        # 定位气泡: 桌宠正上方
-        bw = self.bubble.width()
-        bh = self.bubble.height()
-        self.bubble.move(
-            (self.PET_SIZE - bw) // 2,
-            -bh - 8
-        )
+        self._reposition_bubble()
         self.bubble.show()
         self.bubble.raise_()
         self.bubble_timer.start(duration_ms)
 
+    def _reposition_bubble(self):
+        """把气泡摆到桌宠正上方居中（拖动桌宠时也要跟着走）"""
+        geo = self.geometry()
+        bw, bh = self.bubble.width(), self.bubble.height()
+        self.bubble.move(
+            geo.x() + (geo.width() - bw) // 2,
+            geo.y() - bh - 8
+        )
+
     def _hide_bubble(self):
         self.bubble.hide()
+
+    def moveEvent(self, event):
+        """拖动桌宠时气泡跟随"""
+        super().moveEvent(event)
+        if self.bubble.isVisible():
+            self._reposition_bubble()
 
     # ─── 鼠标事件 ───
 
@@ -421,53 +494,60 @@ class PetWindow(QWidget):
                 self._on_pet_clicked()
 
     def _on_pet_clicked(self):
-        """左键点击桌宠 → 发送想念到对方手机"""
-        # 播放 jump 动画 (无论是否冷却)
+        """左键点击桌宠 → 推送"我想你"到对方手机，通知里带回复入口"""
+        # 播放 jump 动画 (无论是否在冷却)
         self._play_gif('jump.gif')
         self.anim_timer.start(2500)
 
         # 显示气泡
-        self._show_bubble(f"正在把想念发给{self.bf_name}... 💌", 2500)
+        self._show_bubble(f"正在把想念发给{self.partner_name}... 💌", 2500)
 
-        # 冷却检查
+        # 冷却检查：5 秒内多次点击只发一次网络请求，但动画照常播放
         now = time.time()
         if now - self._last_click_time >= self._cooldown:
             self._last_click_time = now
-            # 异步发送 Bark 推送
             threading.Thread(target=self._send_bark, daemon=True).start()
 
-    def _send_bark(self, body=None):
-        """通过 Bark 发送推送通知"""
-        if self.bark_key == "YOUR_BARK_KEY_HERE":
+    def _send_bark(self, body=None, title=None):
+        """
+        通过 Bark 推送到对方手机。
+        关键：url 参数带 ?reply=<我的收件箱>，对方点通知打开页面后，
+        回复会发回我这里 —— 这样 topic 完全不用进公开网页。
+        """
+        if not self.partner_bark_key or self.partner_bark_key in _BARK_PLACEHOLDERS:
             return  # 未配置，静默跳过
 
-        title = f"{self.bf_name}想你啦 💖"
+        if title is None:
+            title = f"{self.my_name}想你啦 💖"
         if body is None:
-            body = "她刚刚戳了戳桌宠：我想你啦！💖"
+            body = f"{self.my_name}刚刚戳了戳桌宠：我想你啦！💖"
 
-        url = f"https://api.day.app/{self.bark_key}"
+        url = f"https://api.day.app/{self.partner_bark_key}"
         params = {
             'title': title,
             'body': body,
-            'url': self.h5_url,
+            'url': self.reply_url,
             'sound': 'bell',
-            'icon': 'https://emojicdn.elk.sh/💖',
+            'group': '想念桌宠',
         }
         try:
-            resp = requests.get(url, params=params, timeout=10)
+            requests.get(url, params=params, timeout=10)
         except Exception:
             pass
 
     # ─── 右键菜单 / 悄悄话 ───
 
     def _on_whisper(self):
-        """弹出悄悄话输入框"""
+        """弹出悄悄话输入框 → 直接把自定义内容推到对方手机"""
         dlg = WhisperDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.text:
-            self._show_bubble(f"💌 悄悄话已发出...", 3000)
+            self._show_bubble("💌 悄悄话已发出...", 3000)
             threading.Thread(
                 target=self._send_bark,
-                args=(f"她悄悄说：{dlg.text}",),
+                kwargs=dict(
+                    title=f"💌 {self.my_name}的悄悄话",
+                    body=dlg.text,
+                ),
                 daemon=True
             ).start()
 
@@ -514,18 +594,24 @@ class PetWindow(QWidget):
 
     # ─── 收到消息 ───
 
-    def _on_message_received(self, message):
-        """收到来自手机的消息"""
-        # 播放 love 动画
-        self._play_gif('love.gif')
-        self.anim_timer.start(5000)
+    def _on_message_received(self, title, message):
+        """收到对方从 H5 页面发回的回复（也可能是我自己发的 poke 同步）"""
+        is_poke = 'poke' in (title or '').lower()
 
-        # 显示气泡 (8秒)
-        self._show_bubble(f"💖 他发来消息：\n『{message}』", 8000)
+        if is_poke:
+            # 对方戳了戳我 —— 轻快一点
+            self._play_gif('jump.gif')
+            self.anim_timer.start(2500)
+            self._show_bubble(f"💖 {self.partner_name}想你了！", 6000)
+        else:
+            # 正常回复 —— 爱心动画 + 长气泡
+            self._play_gif('love.gif')
+            self.anim_timer.start(5000)
+            self._show_bubble(f"💖 {self.partner_name}发来消息：\n『{message}』", 8000)
 
-        # 系统通知
+        # 系统托盘通知
         self.tray_icon.showMessage(
-            f"收到来自她的消息 💖",
+            f"收到来自{self.partner_name}的消息 💖",
             message,
             QSystemTrayIcon.MessageIcon.Information,
             5000
@@ -534,11 +620,13 @@ class PetWindow(QWidget):
     # ─── 退出 ───
 
     def _on_quit(self):
+        self.bubble.close()
         self.listener.stop()
         self.tray_icon.hide()
         QApplication.quit()
 
     def closeEvent(self, event):
+        self.bubble.close()
         self.listener.stop()
         self.tray_icon.hide()
         event.accept()

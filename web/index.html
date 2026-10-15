@@ -131,6 +131,23 @@
   .feedback .emoji { font-size: 48px; margin-bottom: 10px; display: block; }
   .feedback .text { color: #e84393; font-size: 16px; font-weight: 600; }
 
+  /* ===== 非通知入口提示 ===== */
+  .notice {
+    position: fixed; inset: 0; z-index: 50;
+    display: none; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: linear-gradient(160deg, #fbc2eb 0%, #a6c1ee 50%, #c3ccea 100%);
+    text-align: center; padding: 40px;
+  }
+  .notice-emoji {
+    font-size: 64px; margin-bottom: 18px;
+    animation: heartbeat 1.5s ease-in-out infinite;
+  }
+  .notice-text {
+    color: #6b4a5e; font-size: 17px; font-weight: 600; line-height: 1.9;
+  }
+  .notice-text span { font-size: 14px; font-weight: 400; opacity: .75; }
+
   /* ===== 禁止滚动 ===== */
   body { position: fixed; top: 0; left: 0; right: 0; bottom: 0; }
 </style>
@@ -145,13 +162,13 @@
   </div>
 
   <div class="message">
-    <span class="highlight">她</span>刚刚戳了戳桌宠<br>
+    <span class="highlight">TA</span>刚刚戳了戳桌宠<br>
     我想你啦！💖
   </div>
 
   <div class="quick-replies">
     <button class="reply-btn" data-msg="🥰 摸摸头，我也超级想你！">🥰 摸摸头，我也超级想你！</button>
-    <button class="reply-btn" data-msg="🏃‍♂️ 忙完手头这阵马上陪你！">🏃‍♂️ 忙完手头这阵马上陪你！</button>
+    <button class="reply-btn" data-msg="🏃 忙完手头这阵马上陪你！">🏃 忙完手头这阵马上陪你！</button>
     <button class="reply-btn" data-msg="🤗 给你一个大大的隔空拥抱！">🤗 给你一个大大的隔空拥抱！</button>
     <button class="reply-btn" data-msg="🧋 今晚带你去吃好吃的！">🧋 今晚带你去吃好吃的！</button>
   </div>
@@ -164,13 +181,30 @@
 
 <div class="feedback" id="feedback">
   <span class="emoji">✨</span>
-  <span class="text">心意已传回她的电脑桌面~</span>
+  <span class="text">心意已传回 TA 的电脑桌面~</span>
+</div>
+
+<div class="notice" id="notice">
+  <div class="notice-emoji">💌</div>
+  <div class="notice-text">
+    请从手机通知里点开这个页面哦～<br>
+    <span>这样才能把心意送回 TA 的桌面</span>
+  </div>
 </div>
 
 <script>
 // ====== 配置 ======
-const SECRET_TOPIC = "couple_pet_zhuqi_2026_8a3f7b2e9c";
-const NTFY_URL = "https://ntfy.sh/" + SECRET_TOPIC;
+// 页面本身不含任何密钥！回复目标由手机通知带来的 ?reply= 参数决定。
+// 通知是"你的桌宠"发的：它把自己的收件箱 topic 塞进了跳转链接，
+// 所以 topic 只存在于你和 TA 各自的电脑上，不会出现在这个公开页面里。
+const params = new URLSearchParams(location.search);
+const REPLY_TOPIC = (params.get('reply') || '').trim();
+const NTFY_URL = REPLY_TOPIC ? ('https://ntfy.sh/' + REPLY_TOPIC) : null;
+
+// 不是从通知点进来的（直接输网址/被人转发）→ 不给发消息，避免打扰对方
+if (!NTFY_URL) {
+  document.getElementById('notice').style.display = 'flex';
+}
 
 // ====== 背景粒子 (飘落樱花/爱心) ======
 const canvas = document.getElementById('bg-canvas');
@@ -272,10 +306,14 @@ document.body.addEventListener('click', function(e) {
 // ====== 发送消息到 ntfy ======
 function sendMessage(text) {
   if (!text || !text.trim()) return;
+  if (!NTFY_URL) {                      // 没有 reply 参数 → 提示从通知进入
+    document.getElementById('notice').style.display = 'flex';
+    return;
+  }
   fetch(NTFY_URL, {
     method: 'POST',
     body: text.trim(),
-    headers: { 'Title': '来自她的手机' }
+    headers: { 'Title': '💌 回复' }
   }).then(() => {
     showFeedback();
   }).catch(() => {

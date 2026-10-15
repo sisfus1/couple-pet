@@ -9,6 +9,7 @@ dist/
 
 # 本地配置（含个人 Bark Key，不入库）
 config.json
+configs/
 _secrets.py
 
 # 本地验证/诊断脚本与截图
