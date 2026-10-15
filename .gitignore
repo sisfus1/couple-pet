@@ -1,5 +1,22 @@
-.git/
+# Python
+__pycache__/
+*.py[cod]
+*.spec
+
+# PyInstaller 产物
 build/
 dist/
-__pycache__/
-*.spec
+
+# 本地配置（含个人 Bark Key，不入库）
+config.json
+_secrets.py
+
+# 本地验证/诊断脚本与截图
+diag.py
+kill.py
+listwin.py
+screen_grab.py
+pixel_check.py
+verify_render.py
+click_test.py
+*.png

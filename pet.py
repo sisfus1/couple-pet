@@ -32,13 +32,28 @@ from PyQt6.QtGui import (
 # 配置常量 (默认回退)
 # ════════════════════════════════════════════════
 
-# ★★★ 用户配置区：请修改以下值 ★★★
-DEFAULT_BARK_KEY = "FasNSdcSnEgr6pPUF5uDe4"     # ← 已填入你的 Bark Key
-DEFAULT_H5_URL = "https://sisfus1.github.io/couple-pet/"  # ← GitHub Pages 地址
-DEFAULT_BOYFRIEND_NAME = "猪猪"                    # ← 男朋友的昵称
+# 私密配置从 _secrets.py 注入——该文件被 .gitignore 忽略，不会进入仓库。
+# 打包时 PyInstaller 会把它一并编入 EXE，所以最终发给她的单文件 EXE 依然开箱即用。
+try:
+    from _secrets import (
+        BARK_KEY as _INJ_BARK_KEY,
+        H5_URL as _INJ_H5_URL,
+        BOYFRIEND_NAME as _INJ_NAME,
+        SECRET_TOPIC as _INJ_TOPIC,
+    )
+except ImportError:                      # 公开源码 / 未初始化时的安全回退
+    _INJ_BARK_KEY = "YOUR_BARK_KEY_HERE"
+    _INJ_H5_URL = "https://your-h5-url.com"
+    _INJ_NAME = "猪猪"
+    _INJ_TOPIC = None
+
+# ★★★ 用户配置区：真实密钥放在 _secrets.py，不要写在这里 ★★★
+DEFAULT_BARK_KEY = _INJ_BARK_KEY
+DEFAULT_H5_URL = _INJ_H5_URL
+DEFAULT_BOYFRIEND_NAME = _INJ_NAME
 
 # 默认 SECRET_TOPIC (与 web/index.html 中保持一致)
-DEFAULT_SECRET_TOPIC = "couple_pet_zhuqi_2026_8a3f7b2e9c"
+DEFAULT_SECRET_TOPIC = _INJ_TOPIC or "couple_pet_zhuqi_2026_8a3f7b2e9c"
 
 CONFIG_FILE = "config.json"
 

@@ -364,12 +364,11 @@ def gen_heart_ico():
 
         images.append(img)
 
-    # 保存为 ICO (第一张作为主图)
-    images[1].save(  # 32x32 作为主图
+    # 用 64x64 原图保存，由 Pillow 自动生成多尺寸（append_images 对 ICO 不可靠）
+    images[3].save(
         'assets/heart.ico',
         format='ICO',
-        sizes=[(16, 16), (32, 32), (48, 48), (64, 64)],
-        append_images=[images[0], images[2], images[3]]
+        sizes=[(16, 16), (32, 32), (48, 48), (64, 64)]
     )
     print("  ✓ heart.ico")
 
@@ -377,33 +376,77 @@ def gen_heart_ico():
 # ──────────────────────────────────────────────
 # GIF 透明保存
 # ──────────────────────────────────────────────
-def save_transparent_gif(frames, filename, duration=80):
+def save_transparent_gif(frames, filename, duration=80, alpha_threshold=64):
     """
-    将 RGBA 帧列表保存为透明 GIF。
-    使用 palette 模式，index 0 = 透明色。
-    """
-    p_frames = []
-    for frame in frames:
-        rgba = frame.convert('RGBA')
-        # 创建 P 模式图像，填充 index 0（透明）
-        p = Image.new('P', rgba.size, 0)
-        # 量化 RGB 部分
-        rgb = rgba.convert('RGB')
-        quantized = rgb.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
-        # 用 alpha 作为 mask 粘贴
-        alpha = rgba.split()[3]
-        p.paste(quantized, (0, 0), alpha)
-        p_frames.append(p)
+    将 RGBA 帧列表保存为带透明通道的 GIF。
 
-    p_frames[0].save(
+    关键实现要点（踩过的坑）:
+      1. GIF 只有一张全局调色板 → 必须先用所有帧拼成大图统一量化出调色板，
+         否则 Pillow 只用第 1 帧的调色板，后续帧颜色全错。
+      2. 透明必须占用调色板的一个固定索引（这里用 index 0）。
+      3. 不能用 image.paste(quantized, mask) 的方式"搬运"索引——
+         那样只复制了索引值、没有复制调色板，成品会变成灰度。
+    """
+    w, h = frames[0].size
+    n = len(frames)
+
+    # 1) 所有帧拼成一张长图，统一量化出 255 色调色板（留 1 位给透明）
+    sheet = Image.new('RGB', (w, h * n), (255, 255, 255))
+    for i, f in enumerate(frames):
+        sheet.paste(f.convert('RGB'), (0, i * h))
+    ref = sheet.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
+    ref_palette = list(ref.getpalette())[:255 * 3]
+
+    # 2) 新调色板: index 0 = 透明占位, index 1..255 = 原 0..254
+    new_palette = [0, 0, 0] + ref_palette
+
+    converted = []
+    for f in frames:
+        rgba = f.convert('RGBA')
+        alpha = rgba.split()[3]
+
+        # 借用统一调色板量化 → 索引范围 0..254
+        q = rgba.convert('RGB').quantize(palette=ref)
+
+        # 索引整体 +1，给 index 0 腾出透明位
+        q.putdata([min(v + 1, 255) for v in q.getdata()])
+
+        # alpha 低于阈值的像素 → index 0（透明）
+        mask = alpha.point(lambda a: 255 if a < alpha_threshold else 0)
+        q.paste(0, mask)
+
+        q.putpalette(new_palette)
+        converted.append(q)
+
+    converted[0].save(
         filename,
         save_all=True,
-        append_images=p_frames[1:],
+        append_images=converted[1:],
         duration=duration,
         loop=0,
         disposal=2,
-        transparency=0
+        transparency=0,
+        optimize=False
     )
+
+
+def verify_gif(filename):
+    """读取生成的 GIF，报告尺寸/帧数/主色，确认颜色与透明都正常"""
+    with Image.open(filename) as im:
+        frames = getattr(im, 'n_frames', 1)
+        info = dict(im.info)
+        rgba = im.convert('RGBA')
+        px = list(rgba.getdata())
+        opaque = [p for p in px if p[3] >= 128]
+        transparent = len(px) - len(opaque)
+        pink = sum(1 for p in opaque if p[0] > 200 and p[0] - p[1] > 20 and p[2] > 140)
+        gray = sum(1 for p in opaque if max(p[:3]) - min(p[:3]) <= 20)
+        has_trans = 'transparency' in info
+        status = '✅' if (pink > 0 and has_trans) else '❌'
+        print(f"  {status} {os.path.basename(filename)}: {im.size} {frames}帧 "
+              f"透明={has_trans} 不透明像素={len(opaque)} 其中粉色={pink} 灰阶={gray}")
+        return pink > 0 and has_trans
+
 
 
 # ──────────────────────────────────────────────
@@ -416,10 +459,21 @@ if __name__ == '__main__':
     gen_jump()
     gen_love()
     gen_heart_ico()
-    print("\n✅ 所有素材已生成到 assets/ 目录")
 
-    # 验证文件
+    print("\n=== 产物校验 ===")
+    all_ok = True
+    for f in ['idle.gif', 'jump.gif', 'love.gif']:
+        all_ok &= verify_gif(os.path.join('assets', f))
+
+    from PIL import Image as _I
+    ico = _I.open('assets/heart.ico')
+    ico_sizes = sorted(ico.info.get('sizes', []))
+    print(f"  ✅ heart.ico: 含尺寸 {ico_sizes}")
+
+    print("\n=== 文件体积 ===")
     for f in ['idle.gif', 'jump.gif', 'love.gif', 'heart.ico']:
         path = os.path.join('assets', f)
-        size = os.path.getsize(path)
-        print(f"  {f}: {size} bytes")
+        print(f"  {f}: {os.path.getsize(path)} bytes")
+
+    print("\n" + ("✅ 所有素材已生成且校验通过" if all_ok else "❌ 校验失败，请检查"))
+
