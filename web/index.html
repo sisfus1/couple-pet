@@ -314,15 +314,21 @@ function sendMessage(text) {
     method: 'POST',
     body: text.trim(),
     headers: { 'Title': '💌 回复' }
-  }).then(() => {
-    showFeedback();
+  }).then((resp) => {
+    // 必须检查状态码：失败时不能谎报成功，否则用户以为发出去了其实没有
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    showFeedback(true);
   }).catch(() => {
-    showFeedback();
+    showFeedback(false);
   });
 }
 
-function showFeedback() {
+function showFeedback(ok) {
   const fb = document.getElementById('feedback');
+  fb.querySelector('.emoji').textContent = ok ? '✨' : '😢';
+  fb.querySelector('.text').textContent = ok
+    ? '心意已传回 TA 的电脑桌面~'
+    : '没发出去…检查一下网络再试一次';
   fb.classList.add('show');
   setTimeout(() => fb.classList.remove('show'), 2000);
 }
