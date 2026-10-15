@@ -304,33 +304,59 @@ document.body.addEventListener('click', function(e) {
 });
 
 // ====== 发送消息到 ntfy ======
+// ntfy.sh 在国内移动网络下可能不稳定，所以：
+// 1. 不用自定义请求头（Title 放到 URL 路径里，避免某些代理拦截非标头）
+// 2. 失败时自动重试 1 次
+// 3. 把具体错误显示给用户（而不是笼统的"检查网络"）
 function sendMessage(text) {
   if (!text || !text.trim()) return;
-  if (!NTFY_URL) {                      // 没有 reply 参数 → 提示从通知进入
+  if (!NTFY_URL) {
     document.getElementById('notice').style.display = 'flex';
     return;
   }
-  fetch(NTFY_URL, {
-    method: 'POST',
-    body: text.trim(),
-    headers: { 'Title': '💌 回复' }
-  }).then((resp) => {
-    // 必须检查状态码：失败时不能谎报成功，否则用户以为发出去了其实没有
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    showFeedback(true);
-  }).catch(() => {
-    showFeedback(false);
-  });
+
+  var msg = text.trim();
+  // ntfy 支持 URL 路径方式: POST https://ntfy.sh/topic, body=消息
+  // Title 用 ntfy 的 JSON 格式（body 里的 \n 不会丢失）
+  var payload = JSON.stringify({ message: msg, title: '💌 回复' });
+
+  function attempt(label) {
+    return fetch(NTFY_URL, {
+      method: 'POST',
+      body: payload,
+      headers: { 'Content-Type': 'application/json' }
+    }).then(function(resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      return resp.text();
+    }).catch(function(err) {
+      throw err;
+    });
+  }
+
+  attempt('第一次')
+    .then(function() { showFeedback(true); })
+    .catch(function(err1) {
+      // 等 1.5 秒重试一次
+      console.log('第一次失败:', err1.message);
+      setTimeout(function() {
+        attempt('重试')
+          .then(function() { showFeedback(true); })
+          .catch(function(err2) {
+            console.log('重试也失败:', err2.message);
+            showFeedback(false, err2.message || '网络错误');
+          });
+      }, 1500);
+    });
 }
 
-function showFeedback(ok) {
-  const fb = document.getElementById('feedback');
+function showFeedback(ok, errMsg) {
+  var fb = document.getElementById('feedback');
   fb.querySelector('.emoji').textContent = ok ? '✨' : '😢';
   fb.querySelector('.text').textContent = ok
     ? '心意已传回 TA 的电脑桌面~'
-    : '没发出去…检查一下网络再试一次';
+    : ('没发出去：' + (errMsg || '网络错误'));
   fb.classList.add('show');
-  setTimeout(() => fb.classList.remove('show'), 2000);
+  setTimeout(function() { fb.classList.remove('show'); }, ok ? 2000 : 4000);
 }
 
 // ====== 绑定快捷回复 ======
